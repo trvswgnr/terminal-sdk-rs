@@ -1,6 +1,22 @@
 use quote::{ToTokens, quote};
 use std::{collections::BTreeMap, fs, path::Path, str::FromStr};
-use syn::{FnArg, ItemFn, Pat, ReturnType, Type, parse_file};
+use syn::{FnArg, ItemFn, Pat, ReturnType, Type, parse_file, punctuated::Punctuated};
+
+pub type BuildError = Box<dyn std::error::Error>;
+
+/// parameter with name and type as strings
+#[derive(Debug)]
+struct ParamInfo {
+    name: String,
+    ty: String,
+}
+
+/// result types as strings
+#[derive(Debug)]
+struct ResultTypesInfo {
+    value: String,
+    error: String,
+}
 
 /// function info to store parsed API function details
 #[derive(Debug)]
@@ -9,129 +25,167 @@ pub struct FunctionInfo {
     function_name: String,
     return_type: String,
     error_type: String,
-    parameters: Vec<(String, String)>, // (name, type)
+    parameters: Vec<ParamInfo>,
     documentation: String,
 }
 
-pub fn get_api_module_names(folder_path: &Path) -> Vec<String> {
-    let mut modules = Vec::new();
+pub fn get_api_module_names(folder_path: &Path) -> Result<Vec<String>, BuildError> {
+    let names = fs::read_dir(folder_path)?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let is_rs_file = path.extension()?.to_str()? == "rs";
 
-    for entry in fs::read_dir(folder_path).expect("Failed to read API directory") {
-        let entry = entry.expect("Failed to read entry");
-        let path = entry.path();
-
-        if path.is_file() && path.extension().unwrap_or_default() == "rs" {
-            let file_name = path
-                .file_stem()
-                .expect("Failed to get file name")
-                .to_str()
-                .expect("Failed to convert file name to str");
-
-            if file_name != "mod" && file_name != "configuration" {
-                modules.push(file_name.to_string());
+            if !is_rs_file {
+                return None;
             }
-        }
-    }
 
-    modules
+            let file_name = path.file_stem()?.to_string_lossy().into_owned();
+
+            // Skip mod.rs and configuration.rs
+            (!["mod", "configuration"].contains(&file_name.as_str())).then_some(file_name)
+        })
+        .collect();
+
+    Ok(names)
 }
 
-pub fn parse_api_functions(folder_path: &Path, api_modules: &[String]) -> Vec<FunctionInfo> {
-    let mut functions = Vec::new();
+pub fn parse_api_functions(
+    folder_path: &Path,
+    api_modules: &[String],
+) -> Result<Vec<FunctionInfo>, BuildError> {
+    let mut functions: Vec<FunctionInfo> = api_modules
+        .iter()
+        .map(|module_name| -> Result<Vec<FunctionInfo>, BuildError> {
+            let module_path = folder_path.join(format!("{}.rs", module_name));
+            let source = fs::read_to_string(&module_path)?;
 
-    for module_name in api_modules {
-        let module_path = format!("{}/{}.rs", folder_path.display(), module_name);
-        let source = fs::read_to_string(&module_path).expect("Failed to read module file");
-        let syntax = parse_file(&source).expect("Failed to parse module file");
+            let syntax = parse_file(&source)?;
 
-        for item in syntax.items {
-            if let syn::Item::Fn(func) = item {
-                if let Some(function_info) = parse_function(func, module_name) {
-                    functions.push(function_info);
-                }
-            }
-        }
-    }
+            let module_functions: Vec<FunctionInfo> = syntax
+                .items
+                .into_iter()
+                .filter_map(|item| match item {
+                    syn::Item::Fn(func) => parse_function(func, module_name),
+                    _ => None,
+                })
+                .collect();
 
-    // sort functions by module and name for consistent output
-    functions.sort_by(|a, b| match a.module_name.cmp(&b.module_name) {
-        std::cmp::Ordering::Equal => a.function_name.cmp(&b.function_name),
-        other => other,
+            Ok(module_functions)
+        })
+        .collect::<Result<Vec<_>, BuildError>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    functions.sort_by(|a, b| {
+        a.module_name
+            .cmp(&b.module_name)
+            .then(a.function_name.cmp(&b.function_name))
     });
 
-    functions
+    Ok(functions)
 }
 
 fn parse_function(func: ItemFn, module_name: &str) -> Option<FunctionInfo> {
-    // check if function is public and async
-    if !matches!(func.vis, syn::Visibility::Public(_)) || func.sig.asyncness.is_none() {
+    // Only process public async functions with a configuration parameter
+    if !is_valid_api_function(&func) {
         return None;
     }
 
     let function_name = func.sig.ident.to_string();
+    let parameters = extract_parameters(&func.sig.inputs);
+    let result_types = extract_result_types(&func.sig.output)?;
+    let documentation = parse_enum_doc_comment(&func.attrs);
 
-    // parse parameters, excluding configuration
-    let mut parameters = Vec::new();
-    let mut found_config = false;
+    Some(FunctionInfo {
+        module_name: module_name.to_string(),
+        function_name,
+        return_type: result_types.value,
+        error_type: result_types.error,
+        parameters,
+        documentation,
+    })
+}
 
-    for arg in func.sig.inputs.iter() {
+fn is_valid_api_function(func: &ItemFn) -> bool {
+    let is_public = matches!(func.vis, syn::Visibility::Public(_));
+    let is_async = func.sig.asyncness.is_some();
+
+    // an api function should have a "configuration" param
+    let has_config_param = func.sig.inputs.iter().any(|arg| {
         let FnArg::Typed(pat_type) = arg else {
-            continue;
+            return false;
         };
         let Pat::Ident(pat_ident) = &*pat_type.pat else {
-            continue;
+            return false;
         };
+        pat_ident.ident == "configuration"
+    });
 
-        let param_name = pat_ident.ident.to_string();
-        if param_name == "configuration" {
-            found_config = true;
-            continue;
-        }
+    is_public && is_async && has_config_param
+}
 
-        let param_type = pat_type.ty.to_token_stream().to_string();
-        parameters.push((param_name, param_type));
-    }
+fn extract_parameters(inputs: &Punctuated<FnArg, syn::token::Comma>) -> Vec<ParamInfo> {
+    inputs
+        .iter()
+        .filter_map(|arg| {
+            let FnArg::Typed(pat_type) = arg else {
+                return None;
+            };
+            let Pat::Ident(pat_ident) = &*pat_type.pat else {
+                return None;
+            };
 
-    if !found_config {
-        return None;
-    }
+            let param_name = pat_ident.ident.to_string();
 
-    let ReturnType::Type(_, ty) = &func.sig.output else {
+            // exclude the configuration parameter bc we use config from the client
+            // so we don't need to pass it in every function call
+            if param_name == "configuration" {
+                return None;
+            }
+
+            let param_type = pat_type.ty.to_token_stream().to_string();
+            Some(ParamInfo {
+                name: param_name,
+                ty: param_type,
+            })
+        })
+        .collect()
+}
+
+fn extract_result_types(return_type: &ReturnType) -> Option<ResultTypesInfo> {
+    let ReturnType::Type(_, ty) = return_type else {
         return None;
     };
-
     let Type::Path(type_path) = &**ty else {
         return None;
     };
 
-    // make sure we have a Result type with exactly one segment
     let last_segment = type_path.path.segments.last()?;
     if last_segment.ident != "Result" {
         return None;
     }
 
-    // get the generic arguments inside Result<T, Error<E>>
     let syn::PathArguments::AngleBracketed(generic_args) = &last_segment.arguments else {
         return None;
     };
-    let args = generic_args.args.iter().collect::<Vec<_>>();
+    let args: Vec<_> = generic_args.args.iter().collect();
     if args.len() != 2 {
         return None;
     }
 
-    // extract return type T from Result<T, Error<E>>
     let syn::GenericArgument::Type(return_type) = args[0] else {
         return None;
     };
     let return_type = return_type.to_token_stream().to_string();
 
-    // extract error type E from Error<E>
     let syn::GenericArgument::Type(error_type_path) = args[1] else {
         return None;
     };
     let Type::Path(error_path) = error_type_path else {
         return None;
     };
+
     let error_segment = error_path.path.segments.last()?;
     if error_segment.ident != "Error" {
         return None;
@@ -140,17 +194,12 @@ fn parse_function(func: ItemFn, module_name: &str) -> Option<FunctionInfo> {
     let syn::PathArguments::AngleBracketed(error_args) = &error_segment.arguments else {
         return None;
     };
+
     let error_type = error_args.args.first()?.to_token_stream().to_string();
 
-    let documentation = parse_enum_doc_comment(&func.attrs);
-
-    Some(FunctionInfo {
-        module_name: module_name.to_string(),
-        function_name,
-        return_type,
-        error_type,
-        parameters,
-        documentation,
+    Some(ResultTypesInfo {
+        value: return_type,
+        error: error_type,
     })
 }
 
@@ -176,7 +225,7 @@ pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStr
             let params = func
                 .parameters
                 .iter()
-                .map(|(name, ty)| format!("{}: {}", name, ty))
+                .map(|param| format!("{}: {}", param.name, param.ty))
                 .collect::<Vec<_>>()
                 .join(", ");
 
@@ -198,17 +247,17 @@ pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStr
                 let args = func
                     .parameters
                     .iter()
-                    .map(|(name, _)| name.as_str())
+                    .map(|param| param.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
                 let args: proc_macro2::TokenStream = args.parse().unwrap();
                 quote! { , #args }
             };
 
-            let documentation = func.documentation.clone();
+            let docstring = &func.documentation;
 
             let method = quote! {
-                #[doc = #documentation]
+                #[doc = #docstring]
                 pub async fn #fn_name(&self #param_list) -> Result<#return_type, apis::Error<apis::#module_name::#error_type>> {
                     apis::#module_name::#fn_name(&self.config #arg_list).await
                 }
@@ -241,17 +290,20 @@ pub fn build_print_info(msg: &str) {
 }
 
 fn parse_enum_doc_comment(attrs: &[syn::Attribute]) -> String {
-    match attrs.iter().find(|attr| attr.path().is_ident("doc")) {
-        Some(attr) => match &attr.meta {
-            syn::Meta::NameValue(name_value) => match &name_value.value {
-                syn::Expr::Lit(lit) => match &lit.lit {
-                    syn::Lit::Str(lit_str) => lit_str.value(),
-                    _ => String::new(),
-                },
-                _ => String::new(),
-            },
-            _ => String::new(),
-        },
-        None => String::new(),
-    }
+    attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("doc"))
+        .map(|attr| &attr.meta)
+        .and_then(|meta| match meta {
+            syn::Meta::NameValue(nv) => Some(&nv.value),
+            _ => None,
+        })
+        .and_then(|expr| match expr {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) => Some(s.value()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
