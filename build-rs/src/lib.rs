@@ -470,11 +470,12 @@ mod tests {
             fn test_function     (
                 configuration: &Configuration,
                 param1:
-                String,
-                param2: i32,
+        String,
+                param2   :   i32,
             ) -> Result<
-             Vec<String>, Error<CustomError>> {
-                todo!()
+             Vec<String>, Error<
+             CustomError>       > {
+                todo!   ()
             }
         "#;
         fs::write(temp_path.join("test_api.rs"), api_content)?;

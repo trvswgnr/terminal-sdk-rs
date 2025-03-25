@@ -15,4 +15,4 @@ quote = "1.0.40"
 proc-macro2 = "1.0.94"
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile = "3.19.1"
