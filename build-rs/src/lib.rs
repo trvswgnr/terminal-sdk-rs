@@ -10,6 +10,7 @@ pub struct FunctionInfo {
     return_type: String,
     error_type: String,
     parameters: Vec<(String, String)>, // (name, type)
+    documentation: String,
 }
 
 pub fn get_api_module_names(folder_path: &Path) -> Vec<String> {
@@ -141,16 +142,19 @@ fn parse_function(func: ItemFn, module_name: &str) -> Option<FunctionInfo> {
     };
     let error_type = error_args.args.first()?.to_token_stream().to_string();
 
+    let documentation = parse_enum_doc_comment(&func.attrs);
+
     Some(FunctionInfo {
         module_name: module_name.to_string(),
         function_name,
         return_type,
         error_type,
         parameters,
+        documentation,
     })
 }
 
-pub fn write_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStream {
+pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStream {
     let mut all_methods = Vec::new();
 
     // group functions by module
@@ -161,7 +165,7 @@ pub fn write_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStream
 
     // generate each function as a method
     for (module, funcs) in &modules {
-        let module_comment = format!("// {} API", module.replace("_api", "").to_uppercase());
+        let module_comment = format!("/// {} API\n///\n", module.replace("_api", "").to_uppercase());
         let comment = proc_macro2::TokenStream::from_str(&module_comment).unwrap();
         all_methods.push(comment);
 
@@ -198,7 +202,10 @@ pub fn write_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStream
                 quote! { , #args }
             };
 
+            let documentation = func.documentation.clone();
+
             let method = quote! {
+                #[doc = #documentation]
                 pub async fn #fn_name(&self #param_list) -> Result<#return_type, apis::Error<apis::#module_name::#error_type>> {
                     apis::#module_name::#fn_name(&self.config #arg_list).await
                 }
@@ -214,7 +221,7 @@ pub fn write_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStream
 }
 
 pub fn generate_client_impl(functions: &[FunctionInfo]) -> String {
-    let api_methods = write_api_methods(functions);
+    let api_methods = generate_api_methods(functions);
 
     let impl_block = quote! {
         // generated API methods implementation
@@ -228,4 +235,21 @@ pub fn generate_client_impl(functions: &[FunctionInfo]) -> String {
 
 pub fn build_print_info(msg: &str) {
     println!("cargo:warning=\x1b[2K\r\x1b[1m\x1b[34minfo\x1b[0m: {}", msg);
+}
+
+fn parse_enum_doc_comment(attrs: &[syn::Attribute]) -> String {
+    match attrs.iter().find(|attr| attr.path().is_ident("doc")) {
+        Some(attr) => match &attr.meta {
+            syn::Meta::List(meta_list) => meta_list.tokens.to_string(),
+            syn::Meta::Path(path) => path.segments.last().unwrap().ident.to_string(),
+            syn::Meta::NameValue(name_value) => match &name_value.value {
+                syn::Expr::Lit(lit) => match &lit.lit {
+                    syn::Lit::Str(lit_str) => lit_str.value(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            },
+        },
+        None => String::new(),
+    }
 }
