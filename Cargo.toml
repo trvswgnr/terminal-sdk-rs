@@ -1,12 +1,18 @@
-[package]
-name = "terminal"
-version = "0.1.0"
-authors = ["Travis Aaron Wagner <dev@techsavvytravvy.com>"]
-description = "The Terminal API gives you access to the same API that powers the award winning Terminal SSH shop (`ssh terminal.shop`)."
-edition = "2024"
+[workspace]
+members = ["openapi", "build-rs"]
 
-[dependencies]
+[workspace.package]
+name = "terminal"
+version = "0.1.1"
+description = "Unofficial Rust SDK for the Terminal API. The Terminal API gives you access to the same API that powers the award winning Terminal SSH shop (`ssh terminal.shop`)."
+repository = "https://github.com/trvswgnr/terminal-sdk-rs"
+authors = ["techsavvytravvy"]
+rust-version = "1.85.1"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
 openapi = { path = "./openapi" }
 
-[build-dependencies]
-build-rs = { path = "./build-rs"}
+[workspace.build-dependencies]
+build-rs = { path = "./build-rs" }

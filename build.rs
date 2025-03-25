@@ -1,8 +1,8 @@
 use std::{env, fs::File, io::Write, path::Path};
 
 use build_rs::{
-    BuildError, build_print_info, discover_api_module_names, generate_client_impl,
-    parse_api_functions,
+    build_print_info, discover_api_module_names, generate_client_impl, parse_api_functions,
+    BuildError,
 };
 
 fn main() -> Result<(), BuildError> {

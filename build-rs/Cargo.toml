@@ -1,12 +1,18 @@
 [package]
 name = "build-rs"
-version = "0.1.0"
-edition = "2024"
+description = "Library used in the build script for generating API client code"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
 
 [dependencies]
-syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
-quote = "1.0"
-proc-macro2 = "1.0"
+syn = { version = "2.0.100", features = ["full"] }
+quote = "1.0.40"
+proc-macro2 = "1.0.94"
 
 [dev-dependencies]
 tempfile = "3.10"
