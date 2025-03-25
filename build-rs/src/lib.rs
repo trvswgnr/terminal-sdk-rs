@@ -96,6 +96,21 @@ pub fn parse_api_functions(
     Ok(functions)
 }
 
+/// generates the complete client implementation as a string.
+/// this is the final output of the build process that creates
+/// a strongly-typed client matching the API's interface.
+pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, BuildError> {
+    let api_methods = generate_api_methods(functions)?;
+
+    let impl_block = quote! {
+        impl Client {
+            #api_methods
+        }
+    };
+
+    Ok(impl_block.to_string())
+}
+
 fn parse_module_api_functions(
     code: &str,
     module_name: &str,
@@ -111,21 +126,6 @@ fn parse_module_api_functions(
         .collect();
 
     Ok(functions)
-}
-
-/// generates the complete client implementation as a string.
-/// this is the final output of the build process that creates
-/// a strongly-typed client matching the API's interface.
-pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, BuildError> {
-    let api_methods = generate_api_methods(functions)?;
-
-    let impl_block = quote! {
-        impl Client {
-            #api_methods
-        }
-    };
-
-    Ok(impl_block.to_string())
 }
 
 /// extracts metadata from a function if it meets API requirements:
