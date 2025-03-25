@@ -165,7 +165,10 @@ pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStr
 
     // generate each function as a method
     for (module, funcs) in &modules {
-        let module_comment = format!("/// {} API\n///\n", module.replace("_api", "").to_uppercase());
+        let module_comment = format!(
+            "/// {} API\n///\n",
+            module.replace("_api", "").to_uppercase()
+        );
         let comment = proc_macro2::TokenStream::from_str(&module_comment).unwrap();
         all_methods.push(comment);
 
@@ -240,8 +243,6 @@ pub fn build_print_info(msg: &str) {
 fn parse_enum_doc_comment(attrs: &[syn::Attribute]) -> String {
     match attrs.iter().find(|attr| attr.path().is_ident("doc")) {
         Some(attr) => match &attr.meta {
-            syn::Meta::List(meta_list) => meta_list.tokens.to_string(),
-            syn::Meta::Path(path) => path.segments.last().unwrap().ident.to_string(),
             syn::Meta::NameValue(name_value) => match &name_value.value {
                 syn::Expr::Lit(lit) => match &lit.lit {
                     syn::Lit::Str(lit_str) => lit_str.value(),
@@ -249,6 +250,7 @@ fn parse_enum_doc_comment(attrs: &[syn::Attribute]) -> String {
                 },
                 _ => String::new(),
             },
+            _ => String::new(),
         },
         None => String::new(),
     }
