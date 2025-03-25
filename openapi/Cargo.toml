@@ -1,11 +1,12 @@
 [package]
 name = "openapi"
 version = "0.1.0"
-authors = ["OpenAPI Generator team and contributors"]
+authors = ["OpenAPI Generator team and contributors", "Terminal Products, Inc.", "Travis Aaron Wagner <dev@techsavvytravvy.com>"]
 description = "The Terminal API gives you access to the same API that powers the award winning Terminal SSH shop (`ssh terminal.shop`)."
-# Override this license by providing a License Object in the OpenAPI.
-license = "Unlicense"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
 
 [dependencies]
 serde = { version = "^1.0", features = ["derive"] }

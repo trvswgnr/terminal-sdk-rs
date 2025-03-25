@@ -1268,6 +1268,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal"
+version = "0.1.1"
+dependencies = [
+ "build-rs",
+ "openapi",
+]
+
+[[package]]
 name = "time"
 version = "0.3.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
