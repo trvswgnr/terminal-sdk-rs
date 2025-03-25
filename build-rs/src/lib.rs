@@ -88,6 +88,18 @@ pub fn parse_api_functions(
         .flatten()
         .collect();
 
+    // check for duplicate function names
+    let mut seen_functions = std::collections::HashMap::<String, usize>::new();
+    for func in &mut functions {
+        let fn_name = func.function_name.clone();
+        let count = seen_functions.get(&fn_name).unwrap_or(&0);
+        if *count > 0 {
+            // if there are duplicates, append an incrementing number to the function name
+            func.function_name = format!("{}_{}", fn_name, count + 1);
+        }
+        seen_functions.insert(fn_name, count + 1);
+    }
+
     functions.sort_by(|a, b| {
         a.module_name
             .cmp(&b.module_name)
@@ -105,7 +117,7 @@ pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, Bui
 
     let impl_block = quote! {
         impl Client {
-            /// Create a new client with the given configuration
+            /// Creates a new client with the given configuration
             pub fn new(config: Config) -> Self {
                 Client { config }
             }
@@ -294,9 +306,7 @@ fn extract_result_types(return_type: &ReturnType) -> Option<ResultTypesInfo> {
 /// - preserves return types
 /// - automatically handles configuration
 /// - preserves documentation
-fn generate_api_methods(
-    functions: &[ApiFunctionInfo],
-) -> Result<pm::TokenStream, BuildError> {
+fn generate_api_methods(functions: &[ApiFunctionInfo]) -> Result<pm::TokenStream, BuildError> {
     let mut all_methods = Vec::new();
     let mut modules: BTreeMap<&str, Vec<&ApiFunctionInfo>> = BTreeMap::new();
 
@@ -483,6 +493,41 @@ mod tests {
         let functions = parse_api_functions(temp_path, &["test_api".to_string()])?;
 
         do_test(&functions);
+
+        // clean up
+        temp_dir.close()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_api_functions_with_duplicate_names() -> Result<(), BuildError> {
+        let temp_dir = TempDir::new()?;
+        let temp_path = temp_dir.path();
+
+        let api_content = r#"
+            /// Test function documentation
+            pub async fn test_function(configuration: &Configuration) -> Result<(), Error<()>> {
+                todo!()
+            }
+        "#;
+        fs::write(temp_path.join("test_api.rs"), api_content)?;
+
+        let api_content2 = r#"
+            /// Test function documentation
+            pub async fn test_function(configuration: &Configuration) -> Result<(), Error<()>> {
+                todo!()
+            }
+        "#;
+        fs::write(temp_path.join("test_api2.rs"), api_content2)?;
+
+        let functions = parse_api_functions(
+            temp_path,
+            &["test_api".to_string(), "test_api2".to_string()],
+        )?;
+        assert_eq!(functions.len(), 2);
+        assert_eq!(functions[0].function_name, "test_function");
+        assert_eq!(functions[1].function_name, "test_function_2");
 
         // clean up
         temp_dir.close()?;
