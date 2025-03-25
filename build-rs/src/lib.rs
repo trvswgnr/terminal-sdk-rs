@@ -103,11 +103,6 @@ pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, Bui
     let api_methods = generate_api_methods(functions)?;
 
     let impl_block = quote! {
-        /// Client for the Terminal API
-        pub struct Client {
-            pub config: Config,
-        }
-
         impl Client {
             /// Create a new client with the given configuration
             pub fn new(config: Config) -> Self {
@@ -115,12 +110,6 @@ pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, Bui
             }
 
             #api_methods
-        }
-
-        impl Default for Client {
-            fn default() -> Self {
-                Self::new(Config::default())
-            }
         }
     };
 
@@ -640,7 +629,7 @@ mod tests {
         assert_eq!(parse_enum_doc_comment(&attrs), "Test documentation");
 
         // Test empty attributes
-        assert_eq!(parse_enum_doc_comment(&vec![]), "");
+        assert_eq!(parse_enum_doc_comment(&[]), "");
 
         // Test non-doc attribute
         let non_doc_attrs: Vec<syn::Attribute> = parse_quote! {
