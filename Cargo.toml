@@ -9,4 +9,4 @@ edition = "2024"
 openapi = { path = "./openapi" }
 
 [build-dependencies]
-regex = "1.10.3"
+build-rs = { path = "./build-rs"}

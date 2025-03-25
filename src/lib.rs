@@ -1,5 +1,5 @@
 use openapi::apis;
-use openapi::models;
+pub use openapi::models;
 
 pub use openapi::apis::configuration::Configuration as Config;
 
