@@ -32,6 +32,12 @@ async fn main() {
 
 The client provides methods for all API endpoints with proper type checking and documentation.
 
+## Contributing
+
+The base SDK is generated using [OpenAPI Generator](https://openapi-generator.tech) - anything in the `openapi` folder is generated from the OpenAPI spec and should not be edited directly.
+
+The `build-rs` folder contains the code that is used to generate the client at build time.
+
 ## Credits
 
 This project is not affiliated with Terminal Products, Inc. and is not endorsed by them. It is an unofficial Rust client for the Terminal API.
