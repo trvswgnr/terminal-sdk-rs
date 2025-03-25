@@ -26,7 +26,7 @@ struct ResultTypesInfo {
 /// contains all the info needed to generate a client method
 /// that correctly wraps an API function while maintaining its original details.
 #[derive(Debug)]
-pub struct FunctionInfo {
+pub struct ApiFunctionInfo {
     /// which API module this function belongs to
     module_name: String,
     /// name of the function to call
@@ -74,23 +74,13 @@ pub fn discover_api_module_names(folder_path: &Path) -> Result<Vec<String>, Buil
 pub fn parse_api_functions(
     folder_path: &Path,
     api_modules: &[String],
-) -> Result<Vec<FunctionInfo>, BuildError> {
-    let mut functions: Vec<FunctionInfo> = api_modules
+) -> Result<Vec<ApiFunctionInfo>, BuildError> {
+    let mut functions: Vec<ApiFunctionInfo> = api_modules
         .iter()
         .map(|module_name| {
             let module_path = folder_path.join(format!("{}.rs", module_name));
             let source = fs::read_to_string(&module_path)?;
-            let syntax = parse_file(&source)?;
-            let module_functions = syntax
-                .items
-                .into_iter()
-                .filter_map(|item| match item {
-                    syn::Item::Fn(func) => parse_function(func, module_name),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-
-            Ok(module_functions)
+            parse_module_api_functions(&source, module_name)
         })
         .collect::<Result<Vec<_>, BuildError>>()?
         .into_iter()
@@ -106,6 +96,38 @@ pub fn parse_api_functions(
     Ok(functions)
 }
 
+fn parse_module_api_functions(
+    code: &str,
+    module_name: &str,
+) -> Result<Vec<ApiFunctionInfo>, BuildError> {
+    let syntax = parse_file(code)?;
+    let functions = syntax
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(func) => parse_function(func, module_name),
+            _ => None,
+        })
+        .collect();
+
+    Ok(functions)
+}
+
+/// generates the complete client implementation as a string.
+/// this is the final output of the build process that creates
+/// a strongly-typed client matching the API's interface.
+pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, BuildError> {
+    let api_methods = generate_api_methods(functions)?;
+
+    let impl_block = quote! {
+        impl Client {
+            #api_methods
+        }
+    };
+
+    Ok(impl_block.to_string())
+}
+
 /// extracts metadata from a function if it meets API requirements:
 /// - public visibility for external access
 /// - async for non-blocking operation
@@ -113,7 +135,7 @@ pub fn parse_api_functions(
 ///
 /// returns `None` if the function doesn't meet these requirements or
 /// if the return type doesn't match the expected `Result<T, Error<E>>` pattern.
-fn parse_function(func: ItemFn, module_name: &str) -> Option<FunctionInfo> {
+fn parse_function(func: ItemFn, module_name: &str) -> Option<ApiFunctionInfo> {
     if !is_valid_api_function(&func) {
         return None;
     }
@@ -123,7 +145,7 @@ fn parse_function(func: ItemFn, module_name: &str) -> Option<FunctionInfo> {
     let result_types = extract_result_types(&func.sig.output)?;
     let documentation = parse_enum_doc_comment(&func.attrs);
 
-    Some(FunctionInfo {
+    Some(ApiFunctionInfo {
         module_name: module_name.to_string(),
         function_name,
         result_types,
@@ -266,9 +288,11 @@ fn extract_result_types(return_type: &ReturnType) -> Option<ResultTypesInfo> {
 /// - preserves return types
 /// - automatically handles configuration
 /// - preserves documentation
-pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStream {
+fn generate_api_methods(
+    functions: &[ApiFunctionInfo],
+) -> Result<proc_macro2::TokenStream, BuildError> {
     let mut all_methods = Vec::new();
-    let mut modules: BTreeMap<&str, Vec<&FunctionInfo>> = BTreeMap::new();
+    let mut modules: BTreeMap<&str, Vec<&ApiFunctionInfo>> = BTreeMap::new();
 
     for func in functions {
         modules.entry(&func.module_name).or_default().push(func);
@@ -279,7 +303,8 @@ pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStr
             "/// {} API\n///\n",
             module.replace("_api", "").to_uppercase()
         );
-        let comment = proc_macro2::TokenStream::from_str(&module_comment).unwrap();
+
+        let comment = proc_macro2::TokenStream::from_str(&module_comment)?;
         all_methods.push(comment);
 
         for func in funcs {
@@ -292,13 +317,13 @@ pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStr
 
             let fn_name = syn::Ident::new(&func.function_name, proc_macro2::Span::call_site());
             let module_name = syn::Ident::new(&func.module_name, proc_macro2::Span::call_site());
-            let return_type: syn::Type = syn::parse_str(&func.result_types.value).unwrap();
-            let error_type: syn::Type = syn::parse_str(&func.result_types.error).unwrap();
+            let return_type: syn::Type = syn::parse_str(&func.result_types.value)?;
+            let error_type: syn::Type = syn::parse_str(&func.result_types.error)?;
 
             let param_list = if params.is_empty() {
                 quote! {}
             } else {
-                let params: proc_macro2::TokenStream = params.parse().unwrap();
+                let params: proc_macro2::TokenStream = params.parse()?;
                 quote! { , #params }
             };
 
@@ -311,7 +336,7 @@ pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStr
                     .map(|param| param.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                let args: proc_macro2::TokenStream = args.parse().unwrap();
+                let args: proc_macro2::TokenStream = args.parse()?;
                 quote! { , #args }
             };
 
@@ -328,24 +353,9 @@ pub fn generate_api_methods(functions: &[FunctionInfo]) -> proc_macro2::TokenStr
         }
     }
 
-    quote! {
+    Ok(quote! {
         #(#all_methods)*
-    }
-}
-
-/// generates the complete client implementation as a string.
-/// this is the final output of the build process that creates
-/// a strongly-typed client matching the API's interface.
-pub fn generate_client_impl(functions: &[FunctionInfo]) -> String {
-    let api_methods = generate_api_methods(functions);
-
-    let impl_block = quote! {
-        impl Client {
-            #api_methods
-        }
-    };
-
-    impl_block.to_string()
+    })
 }
 
 /// prints a formatted build information message during the build process
@@ -375,6 +385,8 @@ fn parse_enum_doc_comment(attrs: &[syn::Attribute]) -> String {
             _ => None,
         })
         .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -413,8 +425,24 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
 
-        // Create a test API file with a valid function
+        fn do_test(functions: &[ApiFunctionInfo]) {
+            assert_eq!(functions.len(), 1);
+            let func = &functions[0];
+            assert_eq!(func.module_name, "test_api");
+            assert_eq!(func.function_name, "test_function");
+            assert_eq!(func.parameters.len(), 2);
+            assert_eq!(func.parameters[0].name, "param1");
+            assert_eq!(func.parameters[0].ty, "String");
+            assert_eq!(func.parameters[1].name, "param2");
+            assert_eq!(func.parameters[1].ty, "i32");
+            assert_eq!(func.result_types.value, "Vec < String >");
+            assert_eq!(func.result_types.error, "CustomError");
+            assert_eq!(func.documentation, "Test function documentation");
+        }
+
+        // test with a valid function
         let api_content = r#"
+            /// Test function documentation
             pub async fn test_function(
                 configuration: &Configuration,
                 param1: String,
@@ -426,18 +454,60 @@ mod tests {
         fs::write(temp_path.join("test_api.rs"), api_content)?;
 
         let functions = parse_api_functions(temp_path, &["test_api".to_string()])?;
-        assert_eq!(functions.len(), 1);
 
-        let func = &functions[0];
-        assert_eq!(func.module_name, "test_api");
-        assert_eq!(func.function_name, "test_function");
-        assert_eq!(func.parameters.len(), 2);
-        assert_eq!(func.parameters[0].name, "param1");
-        assert_eq!(func.parameters[0].ty, "String");
-        assert_eq!(func.parameters[1].name, "param2");
-        assert_eq!(func.parameters[1].ty, "i32");
-        assert_eq!(func.result_types.value, "Vec < String >");
-        assert_eq!(func.result_types.error, "CustomError");
+        do_test(&functions);
+
+        // test with a valid function with weird whitespace
+        let api_content = r#"
+            /// Test function documentation
+            pub async 
+            fn test_function     (
+                configuration: &Configuration,
+                param1:
+                String,
+                param2: i32,
+            ) -> Result<
+             Vec<String>, Error<CustomError>> {
+                todo!()
+            }
+        "#;
+        fs::write(temp_path.join("test_api.rs"), api_content)?;
+
+        let functions = parse_api_functions(temp_path, &["test_api".to_string()])?;
+
+        do_test(&functions);
+
+        // clean up
+        temp_dir.close()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_api_functions_with_errors() -> Result<(), BuildError> {
+        let temp_dir = TempDir::new()?;
+        let temp_path = temp_dir.path();
+
+        // Create a test API file with a syntax error
+        fs::write(
+            temp_path.join("test_api.rs"),
+            "pub async fn test_function() -> Result<(), Error<()>> { todo!() }",
+        )?;
+
+        let functions = parse_api_functions(temp_path, &["test_api".to_string()])?;
+        assert!(functions.is_empty());
+
+        // Create a test API file with a valid function but an invalid return type
+        fs::write(
+            temp_path.join("test_api.rs"),
+            "pub async fn test_function() -> Result<(), Error<()>> { todo!() }",
+        )?;
+
+        let functions = parse_api_functions(temp_path, &["test_api".to_string()])?;
+        assert!(functions.is_empty());
+
+        // clean up
+        temp_dir.close()?;
 
         Ok(())
     }
@@ -522,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_generate_api_methods() {
-        let functions = vec![FunctionInfo {
+        let functions = vec![ApiFunctionInfo {
             module_name: "test_api".to_string(),
             function_name: "test_function".to_string(),
             result_types: ResultTypesInfo {
@@ -536,7 +606,7 @@ mod tests {
             documentation: "/// Test function documentation".to_string(),
         }];
 
-        let generated = generate_api_methods(&functions).to_string();
+        let generated = generate_api_methods(&functions).unwrap().to_string();
         assert!(generated.contains("test_function"));
         assert!(generated.contains("param1 : i32"));
         assert!(
@@ -565,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_generate_client_impl() {
-        let functions = vec![FunctionInfo {
+        let functions = vec![ApiFunctionInfo {
             module_name: "test_api".to_string(),
             function_name: "test_function".to_string(),
             result_types: ResultTypesInfo {
@@ -573,14 +643,15 @@ mod tests {
                 error: "TestError".to_string(),
             },
             parameters: vec![],
-            documentation: "/// Test function".to_string(),
+            documentation: "Test function".to_string(),
         }];
 
-        let impl_str = generate_client_impl(&functions);
+        let impl_str = generate_client_impl(&functions).unwrap();
         assert!(impl_str.contains("impl Client"));
         assert!(impl_str.contains("test_function"));
         assert!(
             impl_str.contains("Result < String , apis :: Error < apis :: test_api :: TestError >>")
         );
+        assert!(impl_str.contains("Test function"));
     }
 }
