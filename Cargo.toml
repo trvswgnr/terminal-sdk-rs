@@ -1,0 +1,12 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+authors = ["Travis Aaron Wagner <dev@techsavvytravvy.com>"]
+description = "The Terminal API gives you access to the same API that powers the award winning Terminal SSH shop (`ssh terminal.shop`)."
+edition = "2024"
+
+[dependencies]
+openapi = { path = "./openapi" }
+
+[build-dependencies]
+regex = "1.10.3"
