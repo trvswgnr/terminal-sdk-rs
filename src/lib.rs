@@ -3,5 +3,5 @@ pub use openapi::models;
 
 pub use openapi::apis::configuration::Configuration as Config;
 
-// generated API methods from build.rs
+// generated client from build.rs
 include!(concat!(env!("OUT_DIR"), "/api_methods_gen.rs"));
