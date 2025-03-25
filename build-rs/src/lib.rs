@@ -46,7 +46,7 @@ pub struct FunctionInfo {
 /// specifically excludes:
 /// - mod.rs: contains module organization/exports, not API endpoints
 /// - configuration.rs: contains shared config types used across modules
-/// - Non-Rust files
+/// - non-rust files
 pub fn discover_api_module_names(folder_path: &Path) -> Result<Vec<String>, BuildError> {
     let names = fs::read_dir(folder_path)?
         .filter_map(|entry| {
