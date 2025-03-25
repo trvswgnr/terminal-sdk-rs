@@ -6,10 +6,11 @@ The Terminal API gives you access to the same API that powers the award winning 
 
 ## Installation
 
-Clone this repo into your project folder and add the following to `Cargo.toml` under `[dependencies]`:
+Add the following to `Cargo.toml` under `[dependencies]`:
 
-```
-terminal = { path = "./terminal-sdk-rs" }
+```toml
+[dependencies]
+terminal = { git = "https://github.com/trvswgnr/terminal-sdk-rs.git" }
 ```
 
 ## Using the Client
