@@ -1,5 +1,9 @@
 use quote::{ToTokens, quote};
-use std::{collections::BTreeMap, fs, path::Path, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+};
 use syn::{FnArg, ItemFn, Pat, ReturnType, Type, parse_file, punctuated::Punctuated};
 
 /// generic error type for build script operations
@@ -75,30 +79,20 @@ pub fn parse_api_functions(
     folder_path: &Path,
     api_modules: &[String],
 ) -> Result<Vec<ApiFunctionInfo>, BuildError> {
+    let mut seen_functions = HashMap::new();
     let mut functions: Vec<ApiFunctionInfo> = api_modules
         .iter()
         .map(|module_name| {
             let module_path = folder_path.join(format!("{}.rs", module_name));
             let source = fs::read_to_string(&module_path)?;
-            parse_module_api_functions(&source, module_name)
+            parse_module_api_functions(&source, module_name, &mut seen_functions)
         })
         .collect::<Result<Vec<_>, BuildError>>()?
         .into_iter()
         .flatten()
         .collect();
 
-    // check for duplicate function names
-    let mut seen_functions = std::collections::HashMap::<String, usize>::new();
-    for func in &mut functions {
-        let fn_name = func.function_name.clone();
-        let count = seen_functions.get(&fn_name).unwrap_or(&0);
-        if *count > 0 {
-            // if there are duplicates, append an incrementing number to the function name
-            func.function_name = format!("{}_{}", fn_name, count + 1);
-        }
-        seen_functions.insert(fn_name, count + 1);
-    }
-
+    // sort for deterministic output
     functions.sort_by(|a, b| {
         a.module_name
             .cmp(&b.module_name)
@@ -108,37 +102,28 @@ pub fn parse_api_functions(
     Ok(functions)
 }
 
-/// generates the complete client implementation as a string.
-/// this is the final output of the build process that creates
-/// a strongly-typed client matching the API's interface.
-pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, BuildError> {
-    let api_methods = generate_api_methods(functions)?;
-
-    let impl_block = quote! {
-        impl Client {
-            /// Creates a new client with the given configuration
-            pub fn new(config: Config) -> Self {
-                Client { config }
-            }
-
-            #api_methods
-        }
-    };
-
-    Ok(impl_block.to_string())
-}
-
 fn parse_module_api_functions(
     code: &str,
     module_name: &str,
+    seen_functions: &mut HashMap<String, usize>,
 ) -> Result<Vec<ApiFunctionInfo>, BuildError> {
-    let syntax = parse_file(code)?;
-    let functions = syntax
+    let file = parse_file(code)?;
+    let functions = file
         .items
         .into_iter()
         .filter_map(|item| match item {
             syn::Item::Fn(func) => parse_function(func, module_name),
             _ => None,
+        })
+        // handle possibility of duplicate function names
+        .map(|mut func| {
+            let fn_name = func.function_name.clone();
+            let count = seen_functions.get(&fn_name).unwrap_or(&0);
+            if *count > 0 {
+                func.function_name = format!("{}_{}", fn_name, count + 1);
+            }
+            seen_functions.insert(fn_name, count + 1);
+            func
         })
         .collect();
 
@@ -171,7 +156,6 @@ fn parse_function(func: ItemFn, module_name: &str) -> Option<ApiFunctionInfo> {
     })
 }
 
-/// checks if a function is a valid API endpoint:
 fn is_valid_api_function(func: &ItemFn) -> bool {
     let is_public = matches!(func.vis, syn::Visibility::Public(_));
     let is_async = func.sig.asyncness.is_some();
@@ -195,9 +179,12 @@ fn extract_parameters(inputs: &Punctuated<FnArg, syn::token::Comma>) -> Vec<Para
     inputs
         .iter()
         .filter_map(|arg| {
+            // skip if not a typed argument
             let FnArg::Typed(pat_type) = arg else {
                 return None;
             };
+
+            // skip if not an identifier pattern like `param: Type`
             let Pat::Ident(pat_ident) = &*pat_type.pat else {
                 return None;
             };
@@ -299,78 +286,102 @@ fn extract_result_types(return_type: &ReturnType) -> Option<ResultTypesInfo> {
     })
 }
 
+/// generates a module comment from the module name
+fn generate_module_comment(module: &str) -> Result<proc_macro2::TokenStream, BuildError> {
+    let comment = format!(
+        "/// {} API\n///\n",
+        module.replace("_api", "").to_uppercase()
+    );
+    Ok(comment.parse()?)
+}
+
+/// generates parameter list for a function
+fn generate_param_list(params: &[ParamInfo]) -> Result<proc_macro2::TokenStream, BuildError> {
+    if params.is_empty() {
+        return Ok(quote! {});
+    }
+
+    let param_string = params
+        .iter()
+        .map(|param| format!("{}: {}", param.name, param.ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let params: proc_macro2::TokenStream = param_string.parse()?;
+    Ok(quote! { , #params })
+}
+
+/// generates argument list for a function call
+fn generate_arg_list(params: &[ParamInfo]) -> Result<proc_macro2::TokenStream, BuildError> {
+    if params.is_empty() {
+        return Ok(quote! {});
+    }
+
+    let arg_string = params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let args: proc_macro2::TokenStream = arg_string.parse()?;
+    Ok(quote! { , #args })
+}
+
+/// generates a single API method
+fn generate_method(func: &ApiFunctionInfo) -> Result<proc_macro2::TokenStream, BuildError> {
+    let fn_name = syn::Ident::new(&func.function_name, proc_macro2::Span::call_site());
+    let module_name = syn::Ident::new(&func.module_name, proc_macro2::Span::call_site());
+    let return_type: syn::Type = syn::parse_str(&func.result_types.value)?;
+    let error_type: syn::Type = syn::parse_str(&func.result_types.error)?;
+
+    let param_list = generate_param_list(&func.parameters)?;
+    let arg_list = generate_arg_list(&func.parameters)?;
+
+    let docstring = &func.documentation;
+
+    Ok(quote! {
+        #[doc = #docstring]
+        pub async fn #fn_name(&self #param_list) -> Result<#return_type, apis::Error<apis::#module_name::#error_type>> {
+            apis::#module_name::#fn_name(&self.config #arg_list).await
+        }
+    })
+}
+
 /// generates the implementation block containing all API methods for the client.
 /// this creates a properly typed wrapper method for each API function that:
 /// - maintains the same parameter types
 /// - preserves return types
 /// - automatically handles configuration
 /// - preserves documentation
-fn generate_api_methods(functions: &[ApiFunctionInfo]) -> Result<proc_macro2::TokenStream, BuildError> {
-    let mut all_methods = Vec::new();
-    let mut modules: BTreeMap<&str, Vec<&ApiFunctionInfo>> = BTreeMap::new();
+fn generate_api_methods(
+    functions: &[ApiFunctionInfo],
+) -> Result<proc_macro2::TokenStream, BuildError> {
+    // group functions by module
+    let modules: BTreeMap<&str, Vec<&ApiFunctionInfo>> =
+        functions.iter().fold(BTreeMap::new(), |mut acc, func| {
+            acc.entry(&func.module_name).or_default().push(func);
+            acc
+        });
 
-    for func in functions {
-        modules.entry(&func.module_name).or_default().push(func);
-    }
+    // generate methods for each module
+    let methods: Vec<proc_macro2::TokenStream> = modules.iter().try_fold(
+        Vec::new(),
+        |mut acc, (module, funcs)| -> Result<Vec<proc_macro2::TokenStream>, BuildError> {
+            let module_comment = generate_module_comment(module)?;
+            acc.push(module_comment);
 
-    for (module, funcs) in &modules {
-        let module_comment = format!(
-            "/// {} API\n///\n",
-            module.replace("_api", "").to_uppercase()
-        );
-
-        let comment = proc_macro2::TokenStream::from_str(&module_comment)?;
-        all_methods.push(comment);
-
-        for func in funcs {
-            let params = func
-                .parameters
+            let module_methods = funcs
                 .iter()
-                .map(|param| format!("{}: {}", param.name, param.ty))
-                .collect::<Vec<_>>()
-                .join(", ");
+                .map(|func| generate_method(func))
+                .collect::<Result<Vec<_>, BuildError>>()?;
 
-            let fn_name = syn::Ident::new(&func.function_name, proc_macro2::Span::call_site());
-            let module_name = syn::Ident::new(&func.module_name, proc_macro2::Span::call_site());
-            let return_type: syn::Type = syn::parse_str(&func.result_types.value)?;
-            let error_type: syn::Type = syn::parse_str(&func.result_types.error)?;
+            acc.extend(module_methods);
+            Ok(acc)
+        },
+    )?;
 
-            let param_list = if params.is_empty() {
-                quote! {}
-            } else {
-                let params: proc_macro2::TokenStream = params.parse()?;
-                quote! { , #params }
-            };
-
-            let arg_list = if func.parameters.is_empty() {
-                quote! {}
-            } else {
-                let args = func
-                    .parameters
-                    .iter()
-                    .map(|param| param.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let args: proc_macro2::TokenStream = args.parse()?;
-                quote! { , #args }
-            };
-
-            let docstring = &func.documentation;
-
-            let method = quote! {
-                #[doc = #docstring]
-                pub async fn #fn_name(&self #param_list) -> Result<#return_type, apis::Error<apis::#module_name::#error_type>> {
-                    apis::#module_name::#fn_name(&self.config #arg_list).await
-                }
-            };
-
-            all_methods.push(method);
-        }
-    }
-
-    Ok(quote! {
-        #(#all_methods)*
-    })
+    // combine all methods into a single token stream
+    Ok(quote!(#(#methods)*))
 }
 
 /// prints a formatted build information message during the build process
@@ -402,6 +413,26 @@ fn parse_enum_doc_comment(attrs: &[syn::Attribute]) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+/// generates the complete client implementation as a string.
+/// this is the final output of the build process that creates
+/// a strongly-typed client matching the API's interface.
+pub fn generate_client_impl(functions: &[ApiFunctionInfo]) -> Result<String, BuildError> {
+    let api_methods = generate_api_methods(functions)?;
+
+    let impl_block = quote! {
+        impl Client {
+            /// Creates a new client with the given configuration
+            pub fn new(config: Config) -> Self {
+                Client { config }
+            }
+
+            #api_methods
+        }
+    };
+
+    Ok(impl_block.to_string())
 }
 
 #[cfg(test)]
@@ -539,7 +570,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
 
-        // Create a test API file with a syntax error
+        // with syntax error
         fs::write(
             temp_path.join("test_api.rs"),
             "pub async fn test_function() -> Result<(), Error<()>> { todo!() }",
@@ -548,7 +579,7 @@ mod tests {
         let functions = parse_api_functions(temp_path, &["test_api".to_string()])?;
         assert!(functions.is_empty());
 
-        // Create a test API file with a valid function but an invalid return type
+        // with valid function but an invalid return type
         fs::write(
             temp_path.join("test_api.rs"),
             "pub async fn test_function() -> Result<(), Error<()>> { todo!() }",
@@ -565,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_is_valid_api_function() {
-        // Valid API function
+        // valid API function
         let valid_fn: ItemFn = parse_quote! {
             pub async fn valid_api(configuration: &Configuration) -> Result<(), Error<()>> {
                 todo!()
@@ -573,7 +604,7 @@ mod tests {
         };
         assert!(is_valid_api_function(&valid_fn));
 
-        // Not public
+        // not public
         let private_fn: ItemFn = parse_quote! {
             async fn private_api(configuration: &Configuration) -> Result<(), Error<()>> {
                 todo!()
@@ -581,7 +612,7 @@ mod tests {
         };
         assert!(!is_valid_api_function(&private_fn));
 
-        // Not async
+        // not async
         let sync_fn: ItemFn = parse_quote! {
             pub fn sync_api(configuration: &Configuration) -> Result<(), Error<()>> {
                 todo!()
@@ -589,7 +620,7 @@ mod tests {
         };
         assert!(!is_valid_api_function(&sync_fn));
 
-        // No configuration parameter
+        // no configuration parameter
         let no_config_fn: ItemFn = parse_quote! {
             pub async fn no_config_api() -> Result<(), Error<()>> {
                 todo!()
@@ -618,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_extract_result_types() {
-        // Test simple types
+        // simple types
         let return_type: ReturnType = parse_quote! {
             -> Result<String, Error<CustomError>>
         };
@@ -626,7 +657,7 @@ mod tests {
         assert_eq!(result.value, "String");
         assert_eq!(result.error, "CustomError");
 
-        // Test complex generic types
+        // complex generic types
         let complex_return: ReturnType = parse_quote! {
             -> Result<Vec<HashMap<String, i32>>, Error<ComplexError>>
         };
@@ -634,7 +665,7 @@ mod tests {
         assert_eq!(result.value, "Vec < HashMap < String , i32 > >");
         assert_eq!(result.error, "ComplexError");
 
-        // Test invalid return type (not a Result)
+        // invalid return type (not a Result)
         let invalid_return: ReturnType = parse_quote! {
             -> String
         };
@@ -674,10 +705,10 @@ mod tests {
         };
         assert_eq!(parse_enum_doc_comment(&attrs), "Test documentation");
 
-        // Test empty attributes
+        // empty attributes
         assert_eq!(parse_enum_doc_comment(&[]), "");
 
-        // Test non-doc attribute
+        // non-doc attribute
         let non_doc_attrs: Vec<syn::Attribute> = parse_quote! {
             #[derive(Debug)]
         };
