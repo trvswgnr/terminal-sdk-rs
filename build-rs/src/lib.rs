@@ -1,4 +1,3 @@
-use proc_macro2 as pm;
 use quote::{ToTokens, quote};
 use std::{collections::BTreeMap, fs, path::Path, str::FromStr};
 use syn::{FnArg, ItemFn, Pat, ReturnType, Type, parse_file, punctuated::Punctuated};
@@ -306,7 +305,7 @@ fn extract_result_types(return_type: &ReturnType) -> Option<ResultTypesInfo> {
 /// - preserves return types
 /// - automatically handles configuration
 /// - preserves documentation
-fn generate_api_methods(functions: &[ApiFunctionInfo]) -> Result<pm::TokenStream, BuildError> {
+fn generate_api_methods(functions: &[ApiFunctionInfo]) -> Result<proc_macro2::TokenStream, BuildError> {
     let mut all_methods = Vec::new();
     let mut modules: BTreeMap<&str, Vec<&ApiFunctionInfo>> = BTreeMap::new();
 
@@ -320,7 +319,7 @@ fn generate_api_methods(functions: &[ApiFunctionInfo]) -> Result<pm::TokenStream
             module.replace("_api", "").to_uppercase()
         );
 
-        let comment = pm::TokenStream::from_str(&module_comment)?;
+        let comment = proc_macro2::TokenStream::from_str(&module_comment)?;
         all_methods.push(comment);
 
         for func in funcs {
@@ -331,15 +330,15 @@ fn generate_api_methods(functions: &[ApiFunctionInfo]) -> Result<pm::TokenStream
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let fn_name = syn::Ident::new(&func.function_name, pm::Span::call_site());
-            let module_name = syn::Ident::new(&func.module_name, pm::Span::call_site());
+            let fn_name = syn::Ident::new(&func.function_name, proc_macro2::Span::call_site());
+            let module_name = syn::Ident::new(&func.module_name, proc_macro2::Span::call_site());
             let return_type: syn::Type = syn::parse_str(&func.result_types.value)?;
             let error_type: syn::Type = syn::parse_str(&func.result_types.error)?;
 
             let param_list = if params.is_empty() {
                 quote! {}
             } else {
-                let params: pm::TokenStream = params.parse()?;
+                let params: proc_macro2::TokenStream = params.parse()?;
                 quote! { , #params }
             };
 
@@ -352,7 +351,7 @@ fn generate_api_methods(functions: &[ApiFunctionInfo]) -> Result<pm::TokenStream
                     .map(|param| param.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                let args: pm::TokenStream = args.parse()?;
+                let args: proc_macro2::TokenStream = args.parse()?;
                 quote! { , #args }
             };
 
