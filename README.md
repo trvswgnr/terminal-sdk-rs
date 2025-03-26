@@ -36,7 +36,7 @@ The client provides methods for all API endpoints with proper type checking and 
 
 The base SDK is generated using [OpenAPI Generator](https://openapi-generator.tech) - anything in the `openapi` folder is generated from the OpenAPI spec and should not be edited directly.
 
-The `build-rs` folder contains the code that is used to generate the client at build time.
+The `build-rs` folder contains the code that is used to generate the client from the generated OpenAPI code at build time.
 
 ## Credits
 
